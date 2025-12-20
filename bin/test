@@ -3,9 +3,8 @@ set -euo pipefail
 
 export FOUNDRY_PROFILE="${FOUNDRY_PROFILE:-dev}"
 
-if [[ -z "${ETH:-}" ]]; then
-  echo "ERROR: ETH RPC is required. Set ETH to an Ethereum mainnet RPC URL." >&2
-  exit 1
+if [[ -z "${ETH:-}" && -n "${ETH_RPC_URL:-}" ]]; then
+  export ETH="${ETH_RPC_URL}"
 fi
 
 needs_celo=0
@@ -20,9 +19,26 @@ else
   done
 fi
 
-if [[ "$needs_celo" -eq 1 && -z "${CELO:-}" ]]; then
-  echo "ERROR: CELO RPC is required for Celo fork tests. Set CELO to a Celo mainnet RPC URL." >&2
+if [[ -z "${ETH:-}" ]]; then
+  echo "ERROR: ETH RPC is required. Set ETH (or ETH_RPC_URL) to an Ethereum mainnet RPC URL." >&2
   exit 1
+fi
+
+if [[ -z "${CELO:-}" && -n "${CELO_RPC_URL:-}" ]]; then
+  export CELO="${CELO_RPC_URL}"
+fi
+
+if [[ "$needs_celo" -eq 1 && -z "${CELO:-}" ]]; then
+  echo "ERROR: CELO RPC is required for Celo fork tests. Set CELO (or CELO_RPC_URL) to a Celo mainnet RPC URL." >&2
+  exit 1
+fi
+
+if [[ "$needs_celo" -eq 1 ]]; then
+  echo "Running tests: suite=all (includes Celo fork tests)"
+  echo "RPCs: ETH=${ETH} CELO=${CELO}"
+else
+  echo "Running tests: suite=filtered"
+  echo "RPCs: ETH=${ETH}"
 fi
 
 exec forge test "$@"
