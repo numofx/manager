@@ -1,0 +1,20 @@
+{
+  "lib/ERC3156": {
+    "rev": "b4521a4e33199846c24a9ba0fea2b0a36a21860b"
+  },
+  "lib/dss-interfaces": {
+    "rev": "9bfd7afadd1f8c217ef05850b2555691786286cb"
+  },
+  "lib/forge-std": {
+    "branch": {
+      "name": "v1.4.0",
+      "rev": "a2edd39db95df7e9dd3f9ef9edc8c55fefddb6df"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "d00acef4059807535af0bd0dd0ddf619747a044b"
+  },
+  "lib/yieldspace-tv": {
+    "rev": "1b0925b1b6de215ae1d61d3f2889c087f0dbcf5e"
+  }
+}

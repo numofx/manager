@@ -6,10 +6,15 @@ libs = ["lib"]
 solc_version = "0.8.15"
 verbosity = 3
 block_timestamp = 1651743369
+optimizer = true
+optimizer_runs = 200
+via_ir = true
 
 [profile.dev]
 ignored_error_codes = [5667, 5574]
 optimizer = false
+via_ir = false
 
 [rpc_endpoints]
 CELO = "${CELO}"
+ETH = "${ETH}"
