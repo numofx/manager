@@ -33,11 +33,20 @@ if [[ "$needs_celo" -eq 1 && -z "${CELO:-}" ]]; then
   exit 1
 fi
 
+if [[ "$#" -eq 0 ]]; then
+  suite_desc="all (includes Celo fork tests)"
+else
+  if [[ "$needs_celo" -eq 1 ]]; then
+    suite_desc="filtered (includes Celo fork tests)"
+  else
+    suite_desc="filtered (no Celo fork tests)"
+  fi
+fi
+
+echo "Running tests: suite=${suite_desc}"
 if [[ "$needs_celo" -eq 1 ]]; then
-  echo "Running tests: suite=all (includes Celo fork tests)"
   echo "RPCs: ETH=${ETH} CELO=${CELO}"
 else
-  echo "Running tests: suite=filtered"
   echo "RPCs: ETH=${ETH}"
 fi
 
