@@ -32,6 +32,10 @@ crytic-export/
 # Foundry
 out/
 cache/
+broadcast/
 cache/solidity-files-cache.json
 .env
-foundry.lock
+
+# Local / generated
+*.log
+MIGRATION_COMPLETE.md
