@@ -38,7 +38,7 @@ contract StrategyOracleTest is Test, TestConstants, TestExtensions {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 15917726);
+        vm.createSelectFork("ETH", 15917726);
 
         strategyOracle = new StrategyOracle();
         strategyOracle.grantRole(

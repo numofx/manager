@@ -26,7 +26,7 @@ contract YieldSpaceMultiOracleDAIIntegrationTest is Test, TestConstants {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 15313316);
+        vm.createSelectFork("ETH", 15313316);
 
         pOracle = new PoolOracle(24 hours, 24, 5 minutes);
         oracle = new YieldSpaceMultiOracle(pOracle);

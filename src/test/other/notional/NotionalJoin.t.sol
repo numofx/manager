@@ -106,7 +106,7 @@ abstract contract StateZero is Test, TestConstants, TestExtensions {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 16017869);
+        vm.createSelectFork("ETH", 16017869);
         
         // arbitrary values for testing
         fCashTokens = 10e18;

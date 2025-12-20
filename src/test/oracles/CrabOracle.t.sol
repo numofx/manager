@@ -42,7 +42,7 @@ contract CrabOracleTest is Test, TestConstants {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 15974678);
+        vm.createSelectFork("ETH", 15974678);
 
         uniswapV3Oracle = UniswapV3Oracle(0x358538ea4F52Ac15C551f88C701696f6d9b38F3C);
 

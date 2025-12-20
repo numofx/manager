@@ -47,7 +47,7 @@ contract ChainlinkUSDMultiOracleTest is Test, TestConstants, TestExtensions {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 15044600);
+        vm.createSelectFork("ETH", 15044600);
 
         oracleL1 = new ChainlinkUSDMultiOracle();
         flagsL2 = new FlagsInterfaceMock();

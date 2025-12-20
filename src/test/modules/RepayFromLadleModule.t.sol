@@ -43,7 +43,7 @@ abstract contract ZeroTest is Test, TestConstants, TestExtensions {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 15266900);
+        vm.createSelectFork("ETH", 15266900);
         // deployments
         wethMock = new WETH9Mock();
         weth = IWETH9(address(wethMock));

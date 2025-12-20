@@ -19,7 +19,7 @@ contract RETHOracleTest is Test, TestConstants {
             return;
             return;
         }
-        vm.createSelectFork(CELO, 16384773);
+        vm.createSelectFork("ETH", 16384773);
         rethOracle = new RETHOracle(ETH, RETH, IRocketTokenRETH(reth));
     }
 
