@@ -168,6 +168,26 @@ contract MentoSpotOracle is IOracle, AccessControl {
     }
 
     /**
+     * @notice Check the configuration status of a price source
+     * @param baseId Base asset identifier
+     * @param quoteId Quote asset identifier
+     * @return configured Whether the source has been configured (rateFeedID set)
+     * @return hasStalenessCheck Whether staleness checking is enabled (maxAge > 0)
+     * @return hasBounds Whether sanity bounds are configured (minPrice and maxPrice both > 0)
+     * @dev Use this to verify inverse pairs have appropriate safety parameters set
+     */
+    function configStatus(bytes6 baseId, bytes6 quoteId) external view returns (
+        bool configured,
+        bool hasStalenessCheck,
+        bool hasBounds
+    ) {
+        Source memory s = sources[baseId][quoteId];
+        configured = s.rateFeedID != address(0);
+        hasStalenessCheck = s.maxAge != 0;
+        hasBounds = (s.minPrice != 0) && (s.maxPrice != 0);
+    }
+
+    /**
      * @notice Peek at the latest oracle price without state changes
      * @param base Base asset identifier
      * @param quote Quote asset identifier
@@ -175,6 +195,9 @@ contract MentoSpotOracle is IOracle, AccessControl {
      * @return value Equivalent amount in quote asset
      * @return updateTime Timestamp when the price was last updated
      * @dev This is a view function and doesn't update state
+     * @dev CRITICAL: `amount` MUST be normalized to 18 decimals regardless of the token's native decimals.
+     *      This oracle returns values in 18-decimal precision.
+     *      Token-decimal normalization is the caller's responsibility (e.g., Join/adapters).
      */
     function peek(
         bytes32 base,
@@ -192,6 +215,9 @@ contract MentoSpotOracle is IOracle, AccessControl {
      * @return value Equivalent amount in quote asset
      * @return updateTime Timestamp when the price was last updated
      * @dev For Mento oracles, get() is identical to peek() since SortedOracles is always view-only
+     * @dev CRITICAL: `amount` MUST be normalized to 18 decimals regardless of the token's native decimals.
+     *      This oracle returns values in 18-decimal precision.
+     *      Token-decimal normalization is the caller's responsibility (e.g., Join/adapters).
      */
     function get(
         bytes32 base,
@@ -210,6 +236,9 @@ contract MentoSpotOracle is IOracle, AccessControl {
      * @return updateTime Price timestamp
      * @dev Handles decimal conversion from Mento's 1e24 to standard 1e18
      * @dev Applies staleness checks and sanity bounds
+     * @dev CRITICAL: `amount` MUST be normalized to 18 decimals regardless of the token's native decimals.
+     *      This oracle returns values in 18-decimal precision.
+     *      Token-decimal normalization is the caller's responsibility (e.g., Join/adapters).
      */
     function _peek(
         bytes6 baseId,

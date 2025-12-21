@@ -460,4 +460,167 @@ contract MentoSpotOracleTest is Test, TestConstants, AccessControl {
         assertEq(value, 10e18, "Conversion with all checks should work");
         assertEq(updateTime, block.timestamp, "Timestamp should be current");
     }
+
+    // ========== Decimal Normalization Integration Tests ==========
+
+    /**
+     * @notice Integration test proving 18-decimal normalization requirement
+     * @dev This test demonstrates that the oracle expects normalized amounts (18 decimals)
+     *      and that passing non-normalized amounts produces incorrect results.
+     */
+    function testNormalizationRequiredWith6DecToken() public {
+        // Use USDCMock which has 6 native decimals
+        USDCMock usdc = new USDCMock();
+        bytes6 USDC_ID = 0x555344430000; // "USDC"
+
+        // Set up cKES/USDC pair
+        mentoOracle.setSource(CKES, cKES, USDC_ID, usdc, CKES_USD_FEED, false);
+
+        // Price: 0.01 USD per cKES (same as cKES/USD)
+        sortedOraclesMock.setMedianRate(CKES_USD_FEED, 0.01e24);
+
+        // ========== CORRECT USAGE: Normalized amount (18 decimals) ==========
+        // A proper Join adapter would normalize 1000 USDC (1000e6 native) to 1000e18
+        uint256 normalizedAmount = 1000e18; // 1000 cKES normalized to 18 decimals
+        (uint256 correctValue,) = mentoOracle.peek(CKES, USDC_ID, normalizedAmount);
+
+        // Expected: 1000 cKES * 0.01 USD/cKES = 10 USD = 10e18 (in 18-decimal precision)
+        assertEq(correctValue, 10e18, "Normalized amount should produce correct value");
+
+        // ========== INCORRECT USAGE: Non-normalized amount (6 decimals) ==========
+        // If a buggy integration passes 1000 USDC in native decimals (1000e6), the result is WRONG
+        uint256 nonNormalizedAmount = 1000e6; // 1000 cKES in 6 decimals (WRONG!)
+        (uint256 wrongValue,) = mentoOracle.peek(CKES, USDC_ID, nonNormalizedAmount);
+
+        // The oracle will compute: (1000e6 * 0.01e18) / 1e18 = 10,000,000 (off by 12 orders of magnitude!)
+        // Expected: 10e18 = 10,000,000,000,000,000,000 (10 USD in 18 decimals)
+        // Actual: 10,000,000 (0.00000001 USD in 18 decimals)
+        assertEq(wrongValue, 10000000, "Non-normalized amount produces catastrophically wrong value");
+        assertTrue(wrongValue == correctValue / 1e12, "Wrong value is 1 trillion times smaller");
+
+        // ========== CONCLUSION ==========
+        // This test proves that callers MUST normalize amounts to 18 decimals.
+        // The oracle stores baseDecimals/quoteDecimals but does NOT use them in calculations.
+        // Decimal normalization is the caller's responsibility (enforced at Join/adapter layer).
+    }
+
+    // ========== Inverse Pair Safety Configuration Tests ==========
+
+    /**
+     * @notice Test that inverse pairs auto-created by setSource have safety disabled by default
+     * @dev This is Policy A: Inverse pairs start with maxAge=0, minPrice=0, maxPrice=0
+     */
+    function testInversePairSafetyNotPropagated() public {
+        // Set up cKES/USD with safety parameters
+        mentoOracle.setMaxAge(CKES, USD, 3600);                    // 1 hour staleness check
+        mentoOracle.setBounds(CKES, USD, 0.005e18, 0.02e18);      // Sanity bounds
+
+        // Verify cKES/USD has safety enabled
+        (bool cKesConfigured, bool cKesHasStaleness, bool cKesHasBounds) = mentoOracle.configStatus(CKES, USD);
+        assertTrue(cKesConfigured, "cKES/USD should be configured");
+        assertTrue(cKesHasStaleness, "cKES/USD should have staleness check");
+        assertTrue(cKesHasBounds, "cKES/USD should have bounds");
+
+        // Check the auto-created inverse pair USD/cKES (created by setSource in setUp)
+        (bool usdConfigured, bool usdHasStaleness, bool usdHasBounds) = mentoOracle.configStatus(USD, CKES);
+        assertTrue(usdConfigured, "USD/cKES should be auto-configured");
+        assertFalse(usdHasStaleness, "USD/cKES should NOT have staleness check by default");
+        assertFalse(usdHasBounds, "USD/cKES should NOT have bounds by default");
+
+        // Verify the raw source values are zero (Policy A)
+        (,,,, uint256 maxAge, uint256 minPrice, uint256 maxPrice) = mentoOracle.sources(USD, CKES);
+        assertEq(maxAge, 0, "Inverse pair maxAge should be 0");
+        assertEq(minPrice, 0, "Inverse pair minPrice should be 0");
+        assertEq(maxPrice, 0, "Inverse pair maxPrice should be 0");
+    }
+
+    /**
+     * @notice Test that inverse pair safety parameters can be explicitly configured
+     * @dev Operators must explicitly call setMaxAge/setBounds for inverse pairs
+     */
+    function testInversePairSafetyExplicitConfig() public {
+        // Start with default inverse pair (no safety, as proven above)
+        (bool initialConfigured, bool initialStaleness, bool initialBounds) = mentoOracle.configStatus(USD, CKES);
+        assertTrue(initialConfigured, "USD/cKES should exist");
+        assertFalse(initialStaleness, "Initially no staleness");
+        assertFalse(initialBounds, "Initially no bounds");
+
+        // Explicitly configure safety for the inverse pair
+        mentoOracle.setMaxAge(USD, CKES, 7200);                   // 2 hour staleness
+        mentoOracle.setBounds(USD, CKES, 50e18, 200e18);         // Inverse bounds (KES per USD)
+
+        // Verify safety is now enabled
+        (bool finalConfigured, bool finalStaleness, bool finalBounds) = mentoOracle.configStatus(USD, CKES);
+        assertTrue(finalConfigured, "USD/cKES should still be configured");
+        assertTrue(finalStaleness, "USD/cKES should now have staleness check");
+        assertTrue(finalBounds, "USD/cKES should now have bounds");
+
+        // Verify the raw values
+        (,,,, uint256 maxAge, uint256 minPrice, uint256 maxPrice) = mentoOracle.sources(USD, CKES);
+        assertEq(maxAge, 7200, "MaxAge should be set");
+        assertEq(minPrice, 50e18, "MinPrice should be set");
+        assertEq(maxPrice, 200e18, "MaxPrice should be set");
+
+        // Verify safety actually works: set a stale price and ensure it reverts
+        sortedOraclesMock.setMedianRate(CKES_USD_FEED, 0.01e24, block.timestamp - 10000);
+        vm.expectRevert("Stale price");
+        mentoOracle.peek(USD, CKES, 1e18);
+
+        // Verify bounds work: set price outside bounds and ensure it reverts
+        sortedOraclesMock.setMedianRate(CKES_USD_FEED, 0.01e24, block.timestamp); // Fresh but rate = 0.01
+        // USD/cKES inverted = 100 USD/KES, which is within [50, 200], should pass
+        (uint256 value,) = mentoOracle.peek(USD, CKES, 1e18);
+        assertEq(value, 100e18, "Inverse conversion should work with bounds");
+
+        // Set price too high (outside bounds)
+        sortedOraclesMock.setMedianRate(CKES_USD_FEED, 0.004e24, block.timestamp); // rate = 0.004
+        // USD/cKES inverted = 250 USD/KES, which exceeds maxPrice=200
+        vm.expectRevert("Price above maximum");
+        mentoOracle.peek(USD, CKES, 1e18);
+    }
+
+    /**
+     * @notice Test configStatus helper for operational validation
+     * @dev Demonstrates how operators can check configuration status before production use
+     */
+    function testConfigStatusHelper() public {
+        // Create a new pair with no safety
+        bytes6 NEW_BASE = 0x4E4557420000;
+        bytes6 NEW_QUOTE = 0x4E4557510000;
+        CKESMock newBase = new CKESMock();
+        CKESMock newQuote = new CKESMock();
+        address newFeed = address(0x7777);
+
+        mentoOracle.setSource(NEW_BASE, newBase, NEW_QUOTE, newQuote, newFeed, false);
+
+        // Check initial status (no safety)
+        (bool configured, bool hasStaleness, bool hasBounds) = mentoOracle.configStatus(NEW_BASE, NEW_QUOTE);
+        assertTrue(configured, "Should be configured");
+        assertFalse(hasStaleness, "Should not have staleness initially");
+        assertFalse(hasBounds, "Should not have bounds initially");
+
+        // Add staleness only
+        mentoOracle.setMaxAge(NEW_BASE, NEW_QUOTE, 1800);
+        (configured, hasStaleness, hasBounds) = mentoOracle.configStatus(NEW_BASE, NEW_QUOTE);
+        assertTrue(hasStaleness, "Should have staleness after setMaxAge");
+        assertFalse(hasBounds, "Should still not have bounds");
+
+        // Add bounds (both min and max required for hasBounds to be true)
+        mentoOracle.setBounds(NEW_BASE, NEW_QUOTE, 1e18, 10e18);
+        (configured, hasStaleness, hasBounds) = mentoOracle.configStatus(NEW_BASE, NEW_QUOTE);
+        assertTrue(hasBounds, "Should have bounds when both min and max are set");
+
+        // Test partial bounds (only minPrice) - hasBounds should be false
+        bytes6 PARTIAL = 0x504152544941;
+        CKESMock partialBase = new CKESMock();
+        mentoOracle.setSource(PARTIAL, partialBase, NEW_QUOTE, newQuote, newFeed, false);
+        mentoOracle.setBounds(PARTIAL, NEW_QUOTE, 1e18, 0); // Only minPrice
+        (,, bool partialBounds) = mentoOracle.configStatus(PARTIAL, NEW_QUOTE);
+        assertFalse(partialBounds, "hasBounds should be false when only one bound is set");
+
+        // Test unconfigured pair
+        bytes6 UNCONFIGURED = 0x554E434F4E46;
+        (bool unConfigured,,) = mentoOracle.configStatus(UNCONFIGURED, NEW_QUOTE);
+        assertFalse(unConfigured, "Unconfigured pair should return false");
+    }
 }
