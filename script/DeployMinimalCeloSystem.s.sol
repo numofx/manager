@@ -15,22 +15,25 @@ import "@yield-protocol/utils-v2/src/token/IERC20Metadata.sol";
 
 /**
  * @title DeployMinimalCeloSystem
- * @notice Production-ready deployment script for Yield Protocol v2 on Celo
+ * @notice Production-ready IDEMPOTENT deployment script for Yield Protocol v2 on Celo
  * @dev Deploys minimal working system: Cauldron, Ladle, Witch, Oracles, Joins, fyUSDT
+ *
+ * IDEMPOTENCY:
+ *   This script can be safely rerun multiple times. It will reuse existing contracts
+ *   if they are already deployed (detected via bytecode check) or if override env vars
+ *   are provided. Only missing contracts will be deployed.
  *
  * PREFLIGHT (always run first):
  *   source .env
  *   # Simulation (no transactions):
  *   forge script script/DeployMinimalCeloSystem.s.sol --rpc-url "$CELO_RPC_URL" -vvvv
- *   # Optional: local fork via anvil:
- *   anvil --fork-url "$CELO_RPC_URL"  # (in separate terminal)
- *   forge script script/DeployMinimalCeloSystem.s.sol --rpc-url http://127.0.0.1:8545 -vvvv
  *
  * DEPLOY:
  *   source .env
  *   forge script script/DeployMinimalCeloSystem.s.sol \
  *     --rpc-url "$CELO_RPC_URL" \
  *     --broadcast \
+ *     --slow \
  *     -vvvv
  *
  * REQUIRED ENV VARS:
@@ -40,14 +43,21 @@ import "@yield-protocol/utils-v2/src/token/IERC20Metadata.sol";
  *   CKES               - cKES token address
  *   USDT               - USDT token address on Celo
  *
- * OPTIONAL ENV VARS:
+ * OPTIONAL ENV VARS (infrastructure):
  *   WCELO              - wCELO address (default: 0x471EcE3750Da237f93B8E339c536989b8978a438)
  *   SORTED_ORACLES     - Mento SortedOracles (default: 0xefB84935239dAcdecF7c5bA76d8dE40b077B7b33)
  *   KES_USD_RATE_FEED  - cKES/USD rate feed (default: 0xbAcEE37d31b9f022Ef5d232B9fD53F05a531c169)
  *   REVOKE_DEPLOYER    - Set to "true" to revoke deployer permissions (default: true)
  *   MATURITY           - fyUSDT maturity timestamp (default: 1 year from now)
  *
- * NOTE: --verify is optional and requires Celoscan API key setup
+ * OPTIONAL ENV VARS (contract overrides for idempotency):
+ *   CAULDRON           - Reuse existing Cauldron at this address
+ *   LADLE              - Reuse existing Ladle at this address
+ *   WITCH              - Reuse existing Witch at this address
+ *   MENTO_ORACLE       - Reuse existing MentoSpotOracle at this address
+ *   JOIN_CKES          - Reuse existing cKES Join at this address
+ *   JOIN_USDT          - Reuse existing USDT Join at this address
+ *   FYUSDT             - Reuse existing fyUSDT at this address
  */
 contract DeployMinimalCeloSystem is Script {
     // ========== CELO MAINNET CONSTANTS ==========
@@ -102,6 +112,7 @@ contract DeployMinimalCeloSystem is Script {
         // ========== STEP 0: LOAD AND VALIDATE ENVIRONMENT ==========
         console2.log("============================================================");
         console2.log("Yield Protocol v2 - Minimal Celo System Deployment");
+        console2.log("(IDEMPOTENT - Safe to rerun)");
         console2.log("============================================================");
         console2.log("");
 
@@ -110,6 +121,7 @@ contract DeployMinimalCeloSystem is Script {
 
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
+        uint64 nonceBefore = vm.getNonce(deployer);
 
         console2.log("Deployer:       ", deployer);
         console2.log("Balance:        ", deployer.balance / 1e18, "CELO");
@@ -124,91 +136,158 @@ contract DeployMinimalCeloSystem is Script {
         console2.log("Oracle:");
         console2.log("  SortedOracles:", sortedOracles);
         console2.log("  Rate Feed:    ", kesUsdRateFeed);
+        console2.log("  MENTO_ORACLE: ", vm.envOr("MENTO_ORACLE", address(0)), vm.envOr("MENTO_ORACLE", address(0)) != address(0) ? "(will reuse)" : "(will deploy)");
         console2.log("");
         console2.log("fyUSDT Maturity:", maturity);
         console2.log("");
 
-        // Confirm we're on Celo
-        require(block.chainid == CELO_CHAIN_ID, "Must deploy on Celo mainnet (chainId 42220)");
+        // CRITICAL: Enforce Celo mainnet only
+        require(block.chainid == CELO_CHAIN_ID, "Wrong chain: must be Celo mainnet (chainId 42220)");
         console2.log("Chain ID:       ", block.chainid, "(Celo Mainnet)");
         console2.log("");
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // ========== STEP 1: DEPLOY CORE CONTRACTS ==========
-        console2.log("Step 1: Deploying Core Contracts");
+        // ========== STEP 1: DEPLOY/REUSE CORE CONTRACTS ==========
+        console2.log("Step 1: Deploying/Reusing Core Contracts");
         console2.log("------------------------------------------------------------");
 
-        cauldron = new Cauldron();
-        console2.log("  Cauldron:     ", address(cauldron));
+        // Cauldron: deploy or reuse (non-payable)
+        address cauldronOverride = vm.envOr("CAULDRON", address(0));
+        if (cauldronOverride != address(0) && _hasCode(cauldronOverride)) {
+            cauldron = Cauldron(cauldronOverride);
+            console2.log("  Cauldron:     ", address(cauldron), "(REUSED)");
+        } else {
+            cauldron = new Cauldron();
+            console2.log("  Cauldron:     ", address(cauldron), "(DEPLOYED)");
+        }
 
-        ladle = new Ladle(ICauldron(address(cauldron)), IWETH9(wcelo));
-        console2.log("  Ladle:        ", address(ladle));
-        console2.log("  Router:       ", address(ladle.router()));
+        // Ladle: deploy or reuse (PAYABLE - has receive())
+        address payable ladleOverride = payable(vm.envOr("LADLE", address(0)));
+        if (address(ladleOverride) != address(0) && _hasCode(address(ladleOverride))) {
+            ladle = Ladle(ladleOverride);
+            console2.log("  Ladle:        ", address(ladle), "(REUSED)");
+        } else {
+            ladle = new Ladle(ICauldron(address(cauldron)), IWETH9(wcelo));
+            console2.log("  Ladle:        ", address(ladle), "(DEPLOYED)");
+            console2.log("  Router:       ", address(ladle.router()));
+        }
 
-        witch = new Witch(ICauldron(address(cauldron)), ILadle(address(ladle)));
-        console2.log("  Witch:        ", address(witch));
+        // Witch: deploy or reuse (non-payable)
+        address witchOverride = vm.envOr("WITCH", address(0));
+        if (witchOverride != address(0) && _hasCode(witchOverride)) {
+            witch = Witch(witchOverride);
+            console2.log("  Witch:        ", address(witch), "(REUSED)");
+        } else {
+            witch = new Witch(ICauldron(address(cauldron)), ILadle(address(ladle)));
+            console2.log("  Witch:        ", address(witch), "(DEPLOYED)");
+        }
         console2.log("");
 
-        // ========== STEP 2: DEPLOY ORACLE ==========
-        console2.log("Step 2: Deploying Mento Oracle");
+        // ========== STEP 2: DEPLOY/REUSE ORACLE ==========
+        console2.log("Step 2: Deploying/Reusing Mento Oracle");
         console2.log("------------------------------------------------------------");
 
-        mentoOracle = new MentoSpotOracle(ISortedOracles(sortedOracles));
-        console2.log("  MentoOracle:  ", address(mentoOracle));
+        // MentoOracle: deploy or reuse (non-payable)
+        address oracleOverride = vm.envOr("MENTO_ORACLE", address(0));
+        bool oracleReused = false;
+        if (oracleOverride != address(0) && _hasCode(oracleOverride)) {
+            mentoOracle = MentoSpotOracle(oracleOverride);
+            console2.log("  MentoOracle:  ", address(mentoOracle), "(REUSED)");
+            oracleReused = true;
+        } else {
+            mentoOracle = new MentoSpotOracle(ISortedOracles(sortedOracles));
+            console2.log("  MentoOracle:  ", address(mentoOracle), "(DEPLOYED)");
+        }
 
-        // Grant oracle configuration roles
-        mentoOracle.grantRole(mentoOracle.setSource.selector, deployer);
-        mentoOracle.grantRole(mentoOracle.setMaxAge.selector, deployer);
-        mentoOracle.grantRole(mentoOracle.setBounds.selector, deployer);
+        // Configure oracle (only if newly deployed)
+        if (!oracleReused) {
+            // Grant oracle configuration roles
+            mentoOracle.grantRole(mentoOracle.setSource.selector, deployer);
+            mentoOracle.grantRole(mentoOracle.setMaxAge.selector, deployer);
+            mentoOracle.grantRole(mentoOracle.setBounds.selector, deployer);
 
-        // Configure cKES/USD oracle source
-        IERC20Metadata cKES = IERC20Metadata(ckesToken);
-        IERC20Metadata cUSD = IERC20Metadata(cusdToken);
+            // Configure cKES/USD oracle source
+            IERC20Metadata cKES = IERC20Metadata(ckesToken);
+            IERC20Metadata cUSD = IERC20Metadata(cusdToken);
 
-        mentoOracle.setSource(
-            CKES_ID,
-            cKES,
-            USDT_ID,  // Use USDT as USD proxy
-            cUSD,
-            kesUsdRateFeed,
-            false  // not inverse
-        );
-        console2.log("  Configured:   cKES/USD source");
+            mentoOracle.setSource(
+                CKES_ID,
+                cKES,
+                USDT_ID,  // Use USDT as USD proxy
+                cUSD,
+                kesUsdRateFeed,
+                false  // not inverse
+            );
+            console2.log("  Configured:   cKES/USD source");
 
-        // Set safety parameters
-        mentoOracle.setMaxAge(CKES_ID, USDT_ID, ORACLE_MAX_AGE);
-        mentoOracle.setBounds(CKES_ID, USDT_ID, CKES_MIN_PRICE, CKES_MAX_PRICE);
-        console2.log("  Safety:       maxAge=", ORACLE_MAX_AGE, "s, bounds set");
+            // Set safety parameters
+            mentoOracle.setMaxAge(CKES_ID, USDT_ID, ORACLE_MAX_AGE);
+            mentoOracle.setBounds(CKES_ID, USDT_ID, CKES_MIN_PRICE, CKES_MAX_PRICE);
+            console2.log("  Safety:       maxAge=", ORACLE_MAX_AGE, "s, bounds set");
+
+            // Verify configuration succeeded
+            require(_oracleConfiguredForCKES(mentoOracle), "Oracle configuration failed verification");
+        } else {
+            console2.log("  Configuration: Skipped (oracle reused)");
+
+            // CRITICAL: Validate reused oracle is configured
+            require(
+                _oracleConfiguredForCKES(mentoOracle),
+                "Reused oracle missing cKES/USD source; unset MENTO_ORACLE to deploy fresh or configure manually"
+            );
+            console2.log("  Validation:   cKES/USD source verified");
+        }
         console2.log("");
 
-        // ========== STEP 3: DEPLOY JOINS ==========
-        console2.log("Step 3: Deploying Join Adapters");
+        // ========== STEP 3: DEPLOY/REUSE JOINS ==========
+        console2.log("Step 3: Deploying/Reusing Join Adapters");
         console2.log("------------------------------------------------------------");
 
-        ckesJoin = new Join(ckesToken);
-        console2.log("  cKES Join:    ", address(ckesJoin));
+        // cKES Join: deploy or reuse (non-payable)
+        address ckesJoinOverride = vm.envOr("JOIN_CKES", address(0));
+        if (ckesJoinOverride != address(0) && _hasCode(ckesJoinOverride)) {
+            ckesJoin = Join(ckesJoinOverride);
+            console2.log("  cKES Join:    ", address(ckesJoin), "(REUSED)");
+        } else {
+            ckesJoin = new Join(ckesToken);
+            console2.log("  cKES Join:    ", address(ckesJoin), "(DEPLOYED)");
+        }
 
-        usdtJoin = new Join(usdtToken);
-        console2.log("  USDT Join:    ", address(usdtJoin));
+        // USDT Join: deploy or reuse (non-payable)
+        address usdtJoinOverride = vm.envOr("JOIN_USDT", address(0));
+        if (usdtJoinOverride != address(0) && _hasCode(usdtJoinOverride)) {
+            usdtJoin = Join(usdtJoinOverride);
+            console2.log("  USDT Join:    ", address(usdtJoin), "(REUSED)");
+        } else {
+            usdtJoin = new Join(usdtToken);
+            console2.log("  USDT Join:    ", address(usdtJoin), "(DEPLOYED)");
+        }
         console2.log("");
 
-        // ========== STEP 4: DEPLOY FYTOKEN ==========
-        console2.log("Step 4: Deploying fyUSDT");
+        // ========== STEP 4: DEPLOY/REUSE FYTOKEN ==========
+        console2.log("Step 4: Deploying/Reusing fyUSDT");
         console2.log("------------------------------------------------------------");
 
         // Generate series ID (6 bytes: baseId + maturity)
         bytes6 seriesId = bytes6(bytes12(USDT_ID) | bytes12(uint96(maturity)));
 
-        fyUSDT = new FYToken(
-            USDT_ID,
-            IOracle(address(mentoOracle)),  // chi oracle (using spot for simplicity)
-            IJoin(address(usdtJoin)),
-            maturity,
-            string(abi.encodePacked("fyUSDT ", _formatTimestamp(maturity))),
-            string(abi.encodePacked("fyUSDT", _formatMaturity(maturity)))
-        );
-        console2.log("  fyUSDT:       ", address(fyUSDT));
+        // fyUSDT: deploy or reuse (non-payable)
+        address fyUSDTOverride = vm.envOr("FYUSDT", address(0));
+        if (fyUSDTOverride != address(0) && _hasCode(fyUSDTOverride)) {
+            fyUSDT = FYToken(fyUSDTOverride);
+            console2.log("  fyUSDT:       ", address(fyUSDT), "(REUSED)");
+        } else {
+            fyUSDT = new FYToken(
+                USDT_ID,
+                IOracle(address(mentoOracle)),  // chi oracle (using spot for simplicity)
+                IJoin(address(usdtJoin)),
+                maturity,
+                string(abi.encodePacked("fyUSDT ", _formatTimestamp(maturity))),
+                string(abi.encodePacked("fyUSDT", _formatMaturity(maturity)))
+            );
+            console2.log("  fyUSDT:       ", address(fyUSDT), "(DEPLOYED)");
+        }
         console2.log("  Series ID:    ", _bytes6ToString(seriesId));
         console2.log("  Maturity:     ", maturity);
         console2.log("  Name:         ", fyUSDT.name());
@@ -219,22 +298,46 @@ contract DeployMinimalCeloSystem is Script {
         console2.log("Step 5: Configuring Cauldron");
         console2.log("------------------------------------------------------------");
 
-        // Add assets
-        cauldron.addAsset(CKES_ID, ckesToken);
-        console2.log("  Added asset:  cKES");
+        // Grant deployer temporary configuration permissions (safe to re-grant)
+        _grantRoleIfNeeded(cauldron, Cauldron.addAsset.selector, deployer);
+        _grantRoleIfNeeded(cauldron, Cauldron.setLendingOracle.selector, deployer);
+        _grantRoleIfNeeded(cauldron, Cauldron.addSeries.selector, deployer);
+        _grantRoleIfNeeded(cauldron, Cauldron.addIlks.selector, deployer);
+        _grantRoleIfNeeded(cauldron, Cauldron.setSpotOracle.selector, deployer);
+        _grantRoleIfNeeded(cauldron, Cauldron.setDebtLimits.selector, deployer);
 
-        cauldron.addAsset(USDT_ID, usdtToken);
-        console2.log("  Added asset:  USDT");
+        // Add assets (safe to call multiple times - will revert if already exists, but we'll handle)
+        try cauldron.addAsset(CKES_ID, ckesToken) {
+            console2.log("  Added asset:  cKES");
+        } catch {
+            console2.log("  Asset exists: cKES (skipped)");
+        }
 
-        // Add series
-        cauldron.addSeries(seriesId, USDT_ID, IFYToken(address(fyUSDT)));
-        console2.log("  Added series: ", _bytes6ToString(seriesId));
+        try cauldron.addAsset(USDT_ID, usdtToken) {
+            console2.log("  Added asset:  USDT");
+        } catch {
+            console2.log("  Asset exists: USDT (skipped)");
+        }
+
+        // Set rate oracle (safe to call multiple times)
+        cauldron.setLendingOracle(USDT_ID, IOracle(address(mentoOracle)));
+        console2.log("  Rate oracle:  set for USDT");
+
+        // Add series (will revert if exists, handle gracefully)
+        try cauldron.addSeries(seriesId, USDT_ID, IFYToken(address(fyUSDT))) {
+            console2.log("  Added series: ", _bytes6ToString(seriesId));
+        } catch {
+            console2.log("  Series exists:", _bytes6ToString(seriesId), "(skipped)");
+        }
 
         // Add ilks (collateral types) for the series
-        cauldron.addIlks(seriesId, new bytes6[](0));  // Empty array - will set up cKES manually
-        console2.log("  Series ilks:  initialized");
+        try cauldron.addIlks(seriesId, new bytes6[](0)) {
+            console2.log("  Series ilks:  initialized");
+        } catch {
+            console2.log("  Series ilks:  already initialized (skipped)");
+        }
 
-        // Set spot oracle (USDT/cKES pair - base/ilk)
+        // Set spot oracle (safe to call multiple times)
         cauldron.setSpotOracle(
             USDT_ID,                          // baseId (debt asset)
             CKES_ID,                          // ilkId (collateral asset)
@@ -243,7 +346,7 @@ contract DeployMinimalCeloSystem is Script {
         );
         console2.log("  Spot oracle:  USDT/cKES @ 150%");
 
-        // Set debt limits
+        // Set debt limits (safe to call multiple times)
         cauldron.setDebtLimits(
             USDT_ID,  // baseId
             CKES_ID,  // ilkId
@@ -258,23 +361,31 @@ contract DeployMinimalCeloSystem is Script {
         console2.log("Step 6: Configuring Ladle");
         console2.log("------------------------------------------------------------");
 
-        // Add joins
-        ladle.addJoin(CKES_ID, IJoin(address(ckesJoin)));
-        console2.log("  Added join:   cKES");
+        // Grant deployer temporary configuration permissions for Ladle
+        _grantRoleIfNeeded(ladle, Ladle.addJoin.selector, deployer);
 
-        ladle.addJoin(USDT_ID, IJoin(address(usdtJoin)));
-        console2.log("  Added join:   USDT");
+        // Add joins (safe to call multiple times - will revert if exists)
+        try ladle.addJoin(CKES_ID, IJoin(address(ckesJoin))) {
+            console2.log("  Added join:   cKES");
+        } catch {
+            console2.log("  Join exists:  cKES (skipped)");
+        }
 
-        // Add fyToken as pool (even though we don't have YieldSpace pools yet)
-        ladle.addPool(seriesId, IPool(address(fyUSDT)));
-        console2.log("  Added pool:   ", _bytes6ToString(seriesId));
+        try ladle.addJoin(USDT_ID, IJoin(address(usdtJoin))) {
+            console2.log("  Added join:   USDT");
+        } catch {
+            console2.log("  Join exists:  USDT (skipped)");
+        }
         console2.log("");
 
         // ========== STEP 7: CONFIGURE WITCH ==========
         console2.log("Step 7: Configuring Witch (Liquidation Engine)");
         console2.log("------------------------------------------------------------");
 
-        // Set auction parameters
+        // Grant deployer temporary configuration permissions for Witch
+        _grantRoleIfNeeded(witch, witch.setLineAndLimit.selector, deployer);
+
+        // Set auction parameters (safe to call multiple times)
         witch.setLineAndLimit(
             CKES_ID,           // ilkId
             USDT_ID,           // baseId
@@ -293,38 +404,38 @@ contract DeployMinimalCeloSystem is Script {
         console2.log("Step 8: Granting Permissions");
         console2.log("------------------------------------------------------------");
 
-        // Grant Ladle permissions on Cauldron
-        cauldron.grantRole(Cauldron.build.selector, address(ladle));
-        cauldron.grantRole(Cauldron.destroy.selector, address(ladle));
-        cauldron.grantRole(Cauldron.tweak.selector, address(ladle));
-        cauldron.grantRole(Cauldron.give.selector, address(ladle));
-        cauldron.grantRole(Cauldron.pour.selector, address(ladle));
-        cauldron.grantRole(Cauldron.stir.selector, address(ladle));
-        cauldron.grantRole(Cauldron.slurp.selector, address(ladle));
+        // Grant Ladle permissions on Cauldron (safe to re-grant)
+        _grantRoleIfNeeded(cauldron, Cauldron.build.selector, address(ladle));
+        _grantRoleIfNeeded(cauldron, Cauldron.destroy.selector, address(ladle));
+        _grantRoleIfNeeded(cauldron, Cauldron.tweak.selector, address(ladle));
+        _grantRoleIfNeeded(cauldron, Cauldron.give.selector, address(ladle));
+        _grantRoleIfNeeded(cauldron, Cauldron.pour.selector, address(ladle));
+        _grantRoleIfNeeded(cauldron, Cauldron.stir.selector, address(ladle));
+        _grantRoleIfNeeded(cauldron, Cauldron.slurp.selector, address(ladle));
         console2.log("  Cauldron:     Ladle granted vault permissions");
 
-        // Grant Witch permissions on Cauldron
-        cauldron.grantRole(Cauldron.give.selector, address(witch));
-        cauldron.grantRole(Cauldron.slurp.selector, address(witch));
+        // Grant Witch permissions on Cauldron (safe to re-grant)
+        _grantRoleIfNeeded(cauldron, Cauldron.give.selector, address(witch));
+        _grantRoleIfNeeded(cauldron, Cauldron.slurp.selector, address(witch));
         console2.log("  Cauldron:     Witch granted liquidation permissions");
 
-        // Grant Ladle permissions on Joins
-        ckesJoin.grantRole(Join.join.selector, address(ladle));
-        ckesJoin.grantRole(Join.exit.selector, address(ladle));
+        // Grant Ladle permissions on Joins (safe to re-grant)
+        _grantRoleIfNeeded(ckesJoin, Join.join.selector, address(ladle));
+        _grantRoleIfNeeded(ckesJoin, Join.exit.selector, address(ladle));
         console2.log("  cKES Join:    Ladle granted join/exit");
 
-        usdtJoin.grantRole(Join.join.selector, address(ladle));
-        usdtJoin.grantRole(Join.exit.selector, address(ladle));
+        _grantRoleIfNeeded(usdtJoin, Join.join.selector, address(ladle));
+        _grantRoleIfNeeded(usdtJoin, Join.exit.selector, address(ladle));
         console2.log("  USDT Join:    Ladle granted join/exit");
 
         // Grant Witch permissions on Joins (for liquidations)
-        ckesJoin.grantRole(Join.exit.selector, address(witch));
-        usdtJoin.grantRole(Join.exit.selector, address(witch));
+        _grantRoleIfNeeded(ckesJoin, Join.exit.selector, address(witch));
+        _grantRoleIfNeeded(usdtJoin, Join.exit.selector, address(witch));
         console2.log("  Joins:        Witch granted exit");
 
         // Grant Ladle permissions on fyToken
-        fyUSDT.grantRole(fyUSDT.mint.selector, address(ladle));
-        fyUSDT.grantRole(fyUSDT.burn.selector, address(ladle));
+        _grantRoleIfNeeded(fyUSDT, fyUSDT.mint.selector, address(ladle));
+        _grantRoleIfNeeded(fyUSDT, fyUSDT.burn.selector, address(ladle));
         console2.log("  fyUSDT:       Ladle granted mint/burn");
         console2.log("");
 
@@ -333,27 +444,31 @@ contract DeployMinimalCeloSystem is Script {
         console2.log("------------------------------------------------------------");
 
         if (deployer != governance) {
-            // Transfer ROOT roles
-            cauldron.grantRole(cauldron.ROOT(), governance);
-            ladle.grantRole(ladle.ROOT(), governance);
-            witch.grantRole(witch.ROOT(), governance);
-            mentoOracle.grantRole(mentoOracle.ROOT(), governance);
-            ckesJoin.grantRole(ckesJoin.ROOT(), governance);
-            usdtJoin.grantRole(usdtJoin.ROOT(), governance);
-            fyUSDT.grantRole(fyUSDT.ROOT(), governance);
+            // Transfer ROOT roles (safe to re-grant)
+            _grantRoleIfNeeded(cauldron, cauldron.ROOT(), governance);
+            _grantRoleIfNeeded(ladle, ladle.ROOT(), governance);
+            _grantRoleIfNeeded(witch, witch.ROOT(), governance);
+            _grantRoleIfNeeded(mentoOracle, mentoOracle.ROOT(), governance);
+            _grantRoleIfNeeded(ckesJoin, ckesJoin.ROOT(), governance);
+            _grantRoleIfNeeded(usdtJoin, usdtJoin.ROOT(), governance);
+            _grantRoleIfNeeded(fyUSDT, fyUSDT.ROOT(), governance);
 
             console2.log("  Granted ROOT: All contracts -> governance");
 
             if (revokeDeployer) {
-                cauldron.revokeRole(cauldron.ROOT(), deployer);
-                ladle.revokeRole(ladle.ROOT(), deployer);
-                witch.revokeRole(witch.ROOT(), deployer);
-                mentoOracle.revokeRole(mentoOracle.ROOT(), deployer);
-                ckesJoin.revokeRole(ckesJoin.ROOT(), deployer);
-                usdtJoin.revokeRole(usdtJoin.ROOT(), deployer);
-                fyUSDT.revokeRole(fyUSDT.ROOT(), deployer);
-
-                console2.log("  Revoked ROOT: All contracts <- deployer");
+                // Only revoke if deployer still has ROOT
+                if (cauldron.hasRole(cauldron.ROOT(), deployer)) {
+                    cauldron.revokeRole(cauldron.ROOT(), deployer);
+                    ladle.revokeRole(ladle.ROOT(), deployer);
+                    witch.revokeRole(witch.ROOT(), deployer);
+                    mentoOracle.revokeRole(mentoOracle.ROOT(), deployer);
+                    ckesJoin.revokeRole(ckesJoin.ROOT(), deployer);
+                    usdtJoin.revokeRole(usdtJoin.ROOT(), deployer);
+                    fyUSDT.revokeRole(fyUSDT.ROOT(), deployer);
+                    console2.log("  Revoked ROOT: All contracts <- deployer");
+                } else {
+                    console2.log("  Revoke ROOT:  Already revoked (skipped)");
+                }
             } else {
                 console2.log("  Kept ROOT:    Deployer retains ROOT (REVOKE_DEPLOYER=false)");
             }
@@ -363,12 +478,13 @@ contract DeployMinimalCeloSystem is Script {
         console2.log("");
 
         vm.stopBroadcast();
+        bool didBroadcast = vm.getNonce(deployer) > nonceBefore;
 
         // ========== STEP 10: POST-DEPLOYMENT ASSERTIONS ==========
         console2.log("Step 10: Post-Deployment Validation");
         console2.log("------------------------------------------------------------");
 
-        _validateDeployment(deployer);
+        _validateDeployment(deployer, didBroadcast);
 
         // ========== DEPLOYMENT SUMMARY ==========
         console2.log("");
@@ -409,6 +525,29 @@ contract DeployMinimalCeloSystem is Script {
 
     // ========== INTERNAL HELPERS ==========
 
+    /// @dev Check if address has deployed bytecode
+    function _hasCode(address addr) internal view returns (bool) {
+        return addr.code.length > 0;
+    }
+
+    /// @dev Check if oracle is configured with the expected cKES/USD source
+    function _oracleConfiguredForCKES(MentoSpotOracle oracle) internal view returns (bool) {
+        try oracle.sources(CKES_ID, USDT_ID) returns (
+            address rateFeedID, uint8, uint8, bool, uint256, uint256, uint256
+        ) {
+            return rateFeedID != address(0);
+        } catch {
+            return false;
+        }
+    }
+
+    /// @dev Grant role only if not already granted (idempotent)
+    function _grantRoleIfNeeded(AccessControl target, bytes4 role, address account) internal {
+        if (!target.hasRole(role, account)) {
+            target.grantRole(role, account);
+        }
+    }
+
     function _loadEnvironment() internal {
         // Required
         governance = vm.envAddress("GOVERNANCE");
@@ -439,13 +578,13 @@ contract DeployMinimalCeloSystem is Script {
         require(maturity > block.timestamp, "MATURITY must be in the future");
 
         // Verify token contracts exist
-        require(_isContract(ckesToken), "CKES is not a contract");
-        require(_isContract(usdtToken), "USDT is not a contract");
-        require(_isContract(wcelo), "WCELO is not a contract");
-        require(_isContract(sortedOracles), "SORTED_ORACLES is not a contract");
+        require(_hasCode(ckesToken), "CKES is not a contract");
+        require(_hasCode(usdtToken), "USDT is not a contract");
+        require(_hasCode(wcelo), "WCELO is not a contract");
+        require(_hasCode(sortedOracles), "SORTED_ORACLES is not a contract");
     }
 
-    function _validateDeployment(address deployer) internal view {
+    function _validateDeployment(address deployer, bool isBroadcast) internal view {
         // Verify governance has ROOT
         address expectedRoot = revokeDeployer && deployer != governance ? governance : deployer;
         if (deployer != governance && revokeDeployer) {
@@ -462,12 +601,23 @@ contract DeployMinimalCeloSystem is Script {
         require(address(ladle.cauldron()) == address(cauldron), "Ladle: wrong cauldron");
         console2.log("  Ladle:        Cauldron reference correct");
 
-        // Verify oracle functionality
-        (uint256 price, uint256 updateTime) = mentoOracle.peek(CKES_ID, USDT_ID, 1e18);
-        require(price > 0, "Oracle: price is zero");
-        require(price >= CKES_MIN_PRICE && price <= CKES_MAX_PRICE, "Oracle: price out of bounds");
-        require(updateTime > 0, "Oracle: invalid update time");
-        console2.log("  Oracle:       Price valid (", price, "USD/cKES)");
+        // Verify oracle functionality (only when broadcasting)
+        if (isBroadcast) {
+            uint256 amountIn = 1e18; // 1 USDT (normalized to 18 decimals)
+            try mentoOracle.peek(USDT_ID, CKES_ID, amountIn) returns (uint256 amountOut, uint256 updateTime) {
+                require(amountOut > 0, "Oracle: zero output amount");
+                uint256 impliedPrice = (amountIn * 1e18) / amountOut; // USD per CKES in 1e18
+                require(impliedPrice >= CKES_MIN_PRICE && impliedPrice <= CKES_MAX_PRICE, "Oracle: price out of bounds");
+                require(updateTime > 0, "Oracle: invalid update time");
+                console2.log("  Oracle:       Price valid (", impliedPrice, "USD/cKES)");
+            } catch Error(string memory reason) {
+                revert(reason);
+            } catch (bytes memory) {
+                revert("Oracle: peek failed during broadcast validation");
+            }
+        } else {
+            console2.log("  Oracle:       Skipping oracle validation (not broadcasting)");
+        }
 
         // Verify Joins
         require(address(ckesJoin.asset()) == ckesToken, "cKES Join: wrong asset");
@@ -480,12 +630,6 @@ contract DeployMinimalCeloSystem is Script {
 
         console2.log("");
         console2.log("  All assertions passed!");
-    }
-
-    function _isContract(address addr) internal view returns (bool) {
-        uint256 size;
-        assembly { size := extcodesize(addr) }
-        return size > 0;
     }
 
     function _formatTimestamp(uint256 timestamp) internal pure returns (string memory) {

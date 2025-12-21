@@ -103,18 +103,29 @@ See [src/test/README.md](./src/test/README.md) for comprehensive testing documen
 ### Deploy
 
 #### Celo Deployment
-Deploy all contracts to Celo in one command:
+Deploy to Celo mainnet:
 
 ```bash
 source .env
-forge script script/DeployAll.s.sol \
-  --rpc-url $CELO \
+forge script script/DeployMinimalCeloSystem.s.sol \
+  --rpc-url $CELO_RPC_URL \
   --broadcast \
-  --verify \
+  --slow \
   -vvvv
 ```
 
-For detailed deployment instructions, see [CELO_MIGRATION.md](./CELO_MIGRATION.md).
+**Deployed Contracts** (Chain ID: 42220):
+- Cauldron: `0xdf9ce55F0389341221c70BbCe171bF5ab983c21F`
+- Ladle: `0x71dc46418a0b368618999FEd7fC1237a7720E662`
+- Witch: `0xdF4Bc5bef2aAeF3D78ad0B9369f39C5ABdBe081E`
+- MentoOracle: `0xD89cF4B4c739a0100FC96d2Ab0167A081cc2bCEB`
+- cKES Join: `0xA1f65d6B7FC4ABB1f7331cBBD441E478fb76E164`
+- USDT Join: `0xCA12b75Bf6fb0A76b3B8D7Ed805071dBF6221A7d`
+- fyUSDT: `0x8d0c33Bf1CEbE94109dd10632dd4D03096cDDe7e`
+
+**Config**: cKES collateral, USDT debt, 150% ratio, 1M max debt. Oracle configured with cKES/USD (Mento) at 600s maxAge, 0.003-0.015 bounds.
+
+**Idempotent**: Set env vars (`CAULDRON`, `LADLE`, etc) to reuse existing contracts. Script validates reused oracles and skips already-configured assets.
 
 ## Bug Bounty
 Yield is offering bounties for bugs disclosed to us at [security@yield.is](mailto:security@yield.is). The bounty reward is up to $500,000, depending on severity. Please include full details of the vulnerability and steps/code to reproduce. We ask that you permit us time to review and remediate any findings before public disclosure.
